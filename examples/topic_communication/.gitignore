@@ -1,0 +1,12 @@
+# colcon build output
+build/
+install/
+log/
+
+# Python cache and package metadata
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Local text served by the temporary HTTP server
+novel1.txt
