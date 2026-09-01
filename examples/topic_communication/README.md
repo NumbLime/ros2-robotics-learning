@@ -392,3 +392,15 @@ ros2 interface show status_interfaces/msg/SystemStatus
 - `rosidl_generate_interfaces()` generates language-specific message code during the build.
 - Package dependencies make the build order and runtime requirements reproducible.
 - ROS time objects must be converted to the message type required by a timestamp field.
+
+## Qt System Status Visualization
+
+`status_display` subscribes to `/sys_status` and displays the received
+`SystemStatus` message in a Qt `QLabel` window.
+
+```text
+status_publisher
+    ↓ /sys_status
+status_display
+    ↓
+Qt GUI
