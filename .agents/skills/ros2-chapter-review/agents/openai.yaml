@@ -1,0 +1,7 @@
+interface:
+  display_name: "ROS 2 章节复习"
+  short_description: "通过提问、实践验证和仓库整理复习ROS 2课程章节"
+  default_prompt: "使用 $ros2-chapter-review 检查我当前ROS 2章节的理解，通过实践证据验证，并整理到学习仓库。"
+
+policy:
+  allow_implicit_invocation: true
