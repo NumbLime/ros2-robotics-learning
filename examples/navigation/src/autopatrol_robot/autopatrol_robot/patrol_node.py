@@ -1,6 +1,7 @@
 import rclpy
 from pathlib import Path
 import time
+from time import monotonic
 from rclpy.time import Time
 from geometry_msgs.msg import PoseStamped
 from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
@@ -21,8 +22,12 @@ class PatrolNode(BasicNavigator):
             'target_points', [
                 0.0, 0.0, 0.0, 1.0, 1.0, 1.57])  # 参数不支持二维数组，所以需要后面处理
         self.declare_parameter('image_save_path', '')
+        self.declare_parameter('max_retries', 1)
+        self.declare_parameter('navigation_timeout', 120.0)
         self.initial_point_ = self.get_parameter('initial_point').value
         self.target_points_ = self.get_parameter('target_points').value
+        self.max_retries_ = self.get_parameter('max_retries').value
+        self.navigation_timeout_ = self.get_parameter('navigation_timeout').value
 
         configured_image_path = self.get_parameter('image_save_path').value
         if configured_image_path:
@@ -113,23 +118,90 @@ class PatrolNode(BasicNavigator):
             y = self.target_points_[index * 3 + 1]
             yaw = self.target_points_[index * 3 + 2]
             points.append([x, y, yaw])
-            self.get_logger().info(f'获取到目标点{index}->{x},{y},{yaw}')
+            self.get_logger().info(f'获取到目标点{index + 1}->{x},{y},{yaw}')
         return points
 
-    def nav_to_pose(self, target_pose):
+    def nav_to_pose(self, target_pose, target_number):
         """导航到目标点并返回任务最终状态."""
-        self.goToPose(target_pose)
+        total_attempts = self.max_retries_ + 1
+        nav_timeout = self.navigation_timeout_
+        final_result = TaskResult.UNKNOWN
+        final_reason = "UNKNOWN"
 
-        while not self.isTaskComplete():
-            feedback = self.getFeedback()
-            if feedback is not None:
+        for current_attempt in range(1, total_attempts + 1):
+            self.get_logger().info(
+                f'[目标点 {target_number}] '
+                f'开始第{current_attempt}/{total_attempts}次导航'
+            )
+            self.get_logger().info(f'[目标点 {target_number}] 当前导航目标：{target_pose}')
+            timed_out = False
+
+            self.goToPose(target_pose)
+            start_time = monotonic()
+            last_feedback_log_time = start_time
+
+            while not self.isTaskComplete():
+                now = monotonic()
+                feedback = self.getFeedback()
+                if feedback is not None:
+                    if now - last_feedback_log_time >= 1:
+                        self.get_logger().info(
+                            f'[目标点 {target_number}] 剩余距离：{feedback.distance_remaining:.2f} m'
+                        )
+                        last_feedback_log_time = now
+
+                use_time = now - start_time
+                if use_time >= nav_timeout:
+                    self.get_logger().warning(
+                        f'[目标点 {target_number}] '
+                        f'第{current_attempt}次导航已超时'
+                    )
+                    timed_out = True
+                    self.cancelTask()
+                    while True:
+                        if self.isTaskComplete():
+                            break
+                    self.get_logger().info(
+                        f'[目标点 {target_number}] '
+                        f'第{current_attempt}次导航超时任务已取消'
+                    )
+                    break
+
+            result = self.getResult()
+            final_result = result
+            if result == TaskResult.SUCCEEDED:
+                reason = 'SUCCESS'
+            elif timed_out:
+                reason = 'TIMEOUT'
+            elif result == TaskResult.FAILED:
+                reason = 'FAILED'
+            elif result == TaskResult.CANCELED:
+                reason = 'CANCELED'
+            else:
+                reason = 'UNKNOWN'
+
+            final_reason = reason
+
+            if result == TaskResult.SUCCEEDED:
                 self.get_logger().info(
-                    f'剩余距离：{feedback.distance_remaining:.2f} m'
+                    f'[目标点 {target_number}] '
+                    f'第{current_attempt}次导航成功'
                 )
+                return result, reason
 
-        result = self.getResult()
-        self.get_logger().info(f'导航结果：{result}')
-        return result
+            self.get_logger().info(
+                f'[目标点 {target_number}] '
+                f'第{current_attempt}次导航未成功，原因：{reason}'
+            )
+
+            if current_attempt < total_attempts:
+                self.get_logger().info(
+                    f'[目标点 {target_number}] 准备重新发送目标'
+                )
+                continue
+
+        self.get_logger().info(f'[目标点 {target_number}] 所有导航尝试均未成功')
+        return final_result, final_reason
 
     def get_current_pose(self):
         """查询并返回机器人当前位姿."""
@@ -174,12 +246,13 @@ def main():
     while rclpy.ok():
         points = patrol.get_target_points()
 
-        for point in points:
+        for target_number, point in enumerate(points, start=1):
+            patrol.get_logger().info(f'开始导航到目标点{target_number}')
             x, y, yaw = point
             target_pose = patrol.get_pose_by_xyywa(x, y, yaw)
 
             patrol.speech_text(f'正在准备前往{x},{y}目标点')
-            result = patrol.nav_to_pose(target_pose)
+            result, reason = patrol.nav_to_pose(target_pose, target_number)
 
             if result == TaskResult.SUCCEEDED:
                 patrol.speech_text(
@@ -189,9 +262,12 @@ def main():
                     patrol.speech_text('图像记录完毕')
                 else:
                     patrol.speech_text('图像记录失败')
-            elif result == TaskResult.CANCELED:
-                patrol.speech_text(f'前往{x},{y}的导航任务已取消')
-            elif result == TaskResult.FAILED:
-                patrol.speech_text(f'前往{x},{y}的导航任务失败')
             else:
-                patrol.speech_text(f'前往{x},{y}的导航结果未知')
+                patrol.get_logger().warning(
+                    f'[目标点 {target_number}]\n'
+                    f'最终导航结果：{result}\n'
+                    f'原因：{reason}\n'
+                    f'跳过当前目标点'
+                )
+                patrol.speech_text(f'目标点 {target_number}导航失败，跳过当前目标点')
+                continue

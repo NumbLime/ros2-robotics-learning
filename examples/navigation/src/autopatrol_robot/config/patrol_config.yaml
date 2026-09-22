@@ -2,6 +2,8 @@ patrol_node:
   ros__parameters:
     use_sim_time: true
     image_save_path: "~/.ros/autopatrol_images"
+    navigation_timeout: 120.0
+    max_retries: 1
     initial_point: [0.0, 0.0, 0.0]
     target_points: [
       0.0,0.0,0.0,
